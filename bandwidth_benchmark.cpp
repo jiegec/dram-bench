@@ -749,6 +749,13 @@ int main(int argc, char *argv[]) {
     numTransactions = std::stoull(argv[argIdx]);
   }
 
+  if (argIdx + 1 < argc) {
+    std::cerr << "Unknown option after number of transactions: "
+              << argv[argIdx + 1] << std::endl;
+    printUsage(argv[0]);
+    return 1;
+  }
+
   std::cout << "\nConfiguration:" << std::endl;
   std::cout << "  Simulator: " << simulator << std::endl;
   std::cout << "  Transactions: " << numTransactions << std::endl;
