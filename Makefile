@@ -2,7 +2,7 @@
 # Builds a single statically-linked binary with proper object file management
 
 CXX = g++
-CXXFLAGS_COMMON = -std=c++20 -O2 -Wall -MMD -MP
+CXXFLAGS_COMMON = -std=c++20 -O2 -MMD -MP
 
 # Paths
 DRAMSIM3_DIR = ./submodules/DRAMSim3

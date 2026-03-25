@@ -21,6 +21,7 @@
 #include "dramsim3.h"
 
 // Ramulator2 includes
+#include "addr_mapper/addr_mapper.h"
 #include "base/base.h"
 #include "base/config.h"
 #include "dram/dram.h"
@@ -420,7 +421,7 @@ protected:
 
       return addr;
     } else {
-      assert(false);
+      assert(false && "TODO");
     }
   }
 
@@ -501,9 +502,15 @@ public:
     dramConfig.rows = dram->get_level_size("row");
     dramConfig.columns = dram->get_level_size("column");
 
-    // Assume RoBaRaCoCh from Ramulator2
-    // Order: RoBaBgRaCoCh according to source code
-    dramConfig.addressMapping = AddressMappingMode::RoBaBgRaCoCh;
+    // Read address mapping
+    auto mapper = mem->get_ifce<Ramulator::IAddrMapper>();
+    std::cout << "mapper" << mapper->get_name() << std::endl;
+    if (mapper->m_impl->get_name() == "RoBaRaCoCh") {
+      // Order: RoBaBgRaCoCh according to source code
+      dramConfig.addressMapping = AddressMappingMode::RoBaBgRaCoCh;
+    } else {
+      assert(false && "TODO");
+    }
 
     outputFile = outputDir + "/ramulator2.yaml";
   }
@@ -598,8 +605,8 @@ public:
   std::string getSimulatorName() const override { return "DRAMSim3"; }
 };
 
-void printResults(const std::string &name, const MemoryBenchmark::Stats &stats,
-                  std::chrono::milliseconds duration) {
+void printResults(const std::string &name,
+                  const MemoryBenchmark::Stats &stats) {
   double efficiency = 0.0;
   if (stats.config.getTheoreticalBandwidthGBps() > 0) {
     efficiency =
@@ -622,7 +629,6 @@ void printResults(const std::string &name, const MemoryBenchmark::Stats &stats,
             << std::endl;
   std::cout << "  Efficiency: " << std::fixed << std::setprecision(1)
             << efficiency << "%" << std::endl;
-  std::cout << "  Simulation Time: " << duration.count() << " ms" << std::endl;
 }
 
 void printUsage(const char *progName) {
@@ -740,13 +746,9 @@ int main(int argc, char *argv[]) {
                 << std::endl;
       std::cout << std::string(50, '=') << std::endl;
 
-      auto start = std::chrono::high_resolution_clock::now();
       benchmark->runBenchmark(numTransactions, randomMode.second);
-      auto end = std::chrono::high_resolution_clock::now();
       auto randStats = benchmark->getStats();
-      auto randDuration =
-          std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
-      printResults(randomMode.first, randStats, randDuration);
+      printResults(randomMode.first, randStats);
     }
   } catch (const std::exception &e) {
     std::cerr << "Error: " << e.what() << std::endl;
