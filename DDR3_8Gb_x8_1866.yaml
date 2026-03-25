@@ -1,0 +1,25 @@
+MemorySystem:
+  impl: GenericDRAM
+  clock_ratio: 1
+
+  DRAM:
+    impl: DDR3
+    org:
+      preset: DDR3_8Gb_x8
+      channel: 1
+      rank: 2
+    timing:
+      preset: DDR3_1866K
+
+  Controller:
+    impl: Generic
+    Scheduler:
+      impl: FRFCFS
+    RefreshManager:
+      impl: AllBank
+    RowPolicy:
+      impl: OpenRowPolicy
+    plugins:
+
+  AddrMapper:
+    impl: RoBaRaCoCh

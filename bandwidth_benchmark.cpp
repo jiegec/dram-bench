@@ -7,6 +7,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <iomanip>
+#include <ios>
 #include <iostream>
 #include <map>
 #include <memory>
@@ -19,6 +20,12 @@
 #include "configuration.h"
 #include "dramsim3.h"
 
+// Ramulator2 includes
+#include "base/base.h"
+#include "base/config.h"
+#include "dram/dram.h"
+#include "memory_system/memory_system.h"
+
 // Global state for callbacks (shared between both implementations)
 static std::atomic<uint64_t> g_pendingTransactions(0);
 static std::atomic<uint64_t> g_completedTransactions(0);
@@ -26,6 +33,7 @@ static std::atomic<uint64_t> g_totalBytesTransferred(0);
 
 // Random access modes
 enum class RandomAccessMode {
+  Sequential,          // Sequential
   SameBGSameBASameRow, // Same bank group, same bank address, same row
   RandBGRandBARandRow, // Random bank group, random bank address, random row
   SameBGRandBASameRow, // Same bank group, random bank address, same row
@@ -36,6 +44,7 @@ enum class RandomAccessMode {
 // Address mapping modes
 enum class AddressMappingMode {
   RoChRaBaBgCo, // Row, Channel, Rank, Bank, Bank Group, Column
+  RoBaBgRaCoCh, // Row, Bank, Bank Group, Rank, Column, Channel
 };
 
 // Abstract base class for memory benchmarks
@@ -59,7 +68,7 @@ public:
           rows(16384), columns(1024), busWidth(64), burstLength(8),
           addressMapping(AddressMappingMode::RoChRaBaBgCo) {}
 
-    // Compute theoretical bandwidth based on paarmeters
+    // Compute theoretical bandwidth based on parameters
     double getTheoreticalBandwidthGBps() const {
       double transfersPerSec = 2.0 / (tCK * 1e-9);
       double bytesPerTransfer = busWidth / 8.0;
@@ -108,8 +117,7 @@ public:
   DRAMConfig getDRAMConfig() const { return dramConfig; }
 
   // Virtual methods for simulator-specific operations
-  virtual bool willAcceptTransaction(uint64_t addr) = 0;
-  virtual void addTransaction(uint64_t addr) = 0;
+  virtual bool tryAddTransaction(uint64_t addr) = 0;
   virtual void clockTick() = 0;
   virtual void printStats() = 0;
   virtual std::string getSimulatorName() const = 0;
@@ -119,6 +127,9 @@ public:
                RandomAccessMode mode = RandomAccessMode::RandBGRandBARandRow) {
     std::string modeStr;
     switch (mode) {
+    case RandomAccessMode::Sequential:
+      modeStr = "Sequential";
+      break;
     case RandomAccessMode::SameBGSameBASameRow:
       modeStr = "Same Bank Group, Bank, Row";
       break;
@@ -137,34 +148,36 @@ public:
     }
     std::cout << "\n=== " << modeStr << " Benchmark (" << getSimulatorName()
               << ") ===" << std::endl;
-    std::cout << "Transactions: " << numTransactions << std::endl;
 
     resetStats();
     runRandomBankLoop(numTransactions, mode);
     printStats();
   }
 
-protected:
-  uint64_t endCycle;
-  DRAMConfig dramConfig;
-
   void printDRAMConfig(const std::string &simulatorName) const {
     std::cout << "\n  DRAM Configuration (" << simulatorName
               << "):" << std::endl;
-    std::cout << "    Channels: " << dramConfig.channels << std::endl;
-    std::cout << "    Data Bus: " << dramConfig.busWidth << " bits/channel"
+    std::cout << "    Clock Period (tCK): " << dramConfig.tCK << " ns"
               << std::endl;
-    std::cout << "    Burst Length: " << dramConfig.burstLength << std::endl;
+    std::cout << "    Channels: " << dramConfig.channels << std::endl;
+    std::cout << "    Ranks: " << dramConfig.ranks << std::endl;
     std::cout << "    Bank Groups: " << dramConfig.bankGroups << std::endl;
     std::cout << "    Banks per Group: " << dramConfig.banksPerGroup
               << std::endl;
-    std::cout << "    Clock Period (tCK): " << dramConfig.tCK << " ns"
+    std::cout << "    Rows: " << dramConfig.rows << std::endl;
+    std::cout << "    Columns: " << dramConfig.columns << std::endl;
+    std::cout << "    Bus Width: " << dramConfig.busWidth << " bits/channel"
               << std::endl;
+    std::cout << "    Burst Length: " << dramConfig.burstLength << std::endl;
     std::cout << "    Theoretical Max Bandwidth: " << std::fixed
               << std::setprecision(2)
               << dramConfig.getTheoreticalBandwidthGBps() << " GB/s"
               << std::endl;
   }
+
+protected:
+  uint64_t endCycle;
+  DRAMConfig dramConfig;
 
   // Generate random bank addresses
   // Unified benchmark loop with pre-generated addresses
@@ -175,8 +188,7 @@ protected:
 
     while (transactionsIssued < numTransactions) {
       uint64_t addr = addresses[transactionsIssued];
-      if (willAcceptTransaction(addr)) {
-        addTransaction(addr);
+      if (tryAddTransaction(addr)) {
         g_pendingTransactions++;
         transactionsIssued++;
       }
@@ -198,12 +210,28 @@ protected:
     endCycle = currentCycle;
   }
 
+  // Generate sequential addresses
+  std::vector<uint64_t> generateSequential(uint64_t numTransactions) {
+    std::vector<uint64_t> addresses;
+    addresses.reserve(numTransactions);
+
+    for (uint64_t i = 0; i < numTransactions; i++) {
+      addresses.push_back(i * 64);
+    }
+    return addresses;
+  }
+
   // Generate addresses: Same bank group, random bank, row
   std::vector<uint64_t> generateSameBGSameBASameRow(uint64_t numTransactions) {
     std::vector<uint64_t> addresses;
     addresses.reserve(numTransactions);
+
+    uint64_t col = 0;
     for (uint64_t i = 0; i < numTransactions; i++) {
-      addresses.push_back(i * 64);
+      addresses.push_back(composeAddress(
+          0, 0, col / (dramConfig.columns / dramConfig.burstLength),
+          col % (dramConfig.columns / dramConfig.burstLength)));
+      col++;
     }
     return addresses;
   }
@@ -294,23 +322,20 @@ protected:
     addresses.reserve(numTransactions);
 
     std::vector<uint64_t> bg;
-    std::vector<uint64_t> ba;
 
     std::random_device rd;
     std::mt19937_64 gen(rd());
 
     for (uint64_t i = 0; i < numTransactions; i++) {
       bg.push_back(i % dramConfig.bankGroups);
-      ba.push_back(0);
     }
     std::shuffle(bg.begin(), bg.end(), gen);
-    std::shuffle(ba.begin(), ba.end(), gen);
 
-    std::map<std::tuple<uint64_t, uint64_t>, uint64_t> cols;
+    std::map<uint64_t, uint64_t> cols;
     for (uint64_t i = 0; i < numTransactions; i++) {
-      uint64_t &col = cols[std::make_tuple(bg[i], ba[i])];
+      uint64_t &col = cols[bg[i]];
       addresses.push_back(composeAddress(
-          bg[i], ba[i], col / (dramConfig.columns / dramConfig.burstLength),
+          bg[i], 0, col / (dramConfig.columns / dramConfig.burstLength),
           col % (dramConfig.columns / dramConfig.burstLength)));
       col++;
     }
@@ -320,52 +345,78 @@ protected:
   // Compose physical address from bank group, bank, row, and column
   uint64_t composeAddress(uint64_t bankGroup, uint64_t bank, uint64_t row,
                           uint64_t col) const {
+    // Column
+    assert(col < dramConfig.columns / dramConfig.burstLength);
+    int colBits = 0;
+    int temp = dramConfig.columns / dramConfig.burstLength;
+    while (temp > 1) {
+      colBits++;
+      assert(temp % 2 == 0);
+      temp >>= 1;
+    }
+
+    // Bank Group
+    assert(bankGroup < dramConfig.bankGroups);
+    int bgBits = 0;
+    temp = dramConfig.bankGroups;
+    while (temp > 1) {
+      bgBits++;
+      assert(temp % 2 == 0);
+      temp >>= 1;
+    }
+
+    // Bank
+    int bankBits = 0;
+    assert(bank < dramConfig.banksPerGroup);
+    temp = dramConfig.banksPerGroup;
+    while (temp > 1) {
+      bankBits++;
+      temp >>= 1;
+    }
+
+    // Rank
+    int rankBits = 0;
+    temp = dramConfig.ranks;
+    while (temp > 1) {
+      rankBits++;
+      temp >>= 1;
+    }
+
     if (dramConfig.addressMapping == AddressMappingMode::RoChRaBaBgCo) {
       // DRAM address mapping: [row][channel][rank][bank][bank group][column]
       uint64_t addr = 0;
 
       // Column is at the lowest bits (6 bits for 64-byte cache line)
-      assert(col < dramConfig.columns / dramConfig.burstLength);
-      int colBits = 0;
-      int temp = dramConfig.columns / dramConfig.burstLength;
-      while (temp > 1) {
-        colBits++;
-        assert(temp % 2 == 0);
-        temp >>= 1;
-      }
       addr |= col << 6;
 
       // Bank group next (log2(bankGroups) bits)
-      assert(bankGroup < dramConfig.bankGroups);
-      int bgBits = 0;
-      temp = dramConfig.bankGroups;
-      while (temp > 1) {
-        bgBits++;
-        assert(temp % 2 == 0);
-        temp >>= 1;
-      }
       addr |= bankGroup << (6 + colBits);
 
       // Bank address next (log2(banksPerGroup) bits)
-      int bankBits = 0;
-      assert(bank < dramConfig.banksPerGroup);
-      temp = dramConfig.banksPerGroup;
-      while (temp > 1) {
-        bankBits++;
-        temp >>= 1;
-      }
       addr |= bank << (6 + colBits + bgBits);
 
       // Rank next
-      int rankBits = 0;
-      temp = dramConfig.ranks;
-      while (temp > 1) {
-        rankBits++;
-        temp >>= 1;
-      }
-
       // Row is at the highest bits
       addr |= row << (6 + colBits + bankBits + rankBits + bgBits);
+
+      return addr;
+    } else if (dramConfig.addressMapping == AddressMappingMode::RoBaBgRaCoCh) {
+      // DRAM address mapping: [row][bank][bank group][rank][column][channel]
+      uint64_t addr = 0;
+
+      // Channel is at the lowest bits (6 bits for 64-byte cache line)
+      // Column next
+      addr |= col << 6;
+
+      // Rank next
+      // Bank group next (log2(bankGroups) bits)
+      addr |= bankGroup << (6 + colBits + rankBits);
+
+      // Bank address next (log2(banksPerGroup) bits)
+      addr |= bank << (6 + colBits + rankBits + bgBits);
+
+      // Row is at the highest bits
+      addr |= row << (6 + colBits + rankBits + bgBits + bankBits);
 
       return addr;
     } else {
@@ -380,6 +431,9 @@ protected:
     std::vector<uint64_t> addresses;
 
     switch (mode) {
+    case RandomAccessMode::Sequential:
+      addresses = generateSequential(numTransactions);
+      break;
     case RandomAccessMode::SameBGSameBASameRow:
       addresses = generateSameBGSameBASameRow(numTransactions);
       break;
@@ -402,6 +456,82 @@ protected:
 
     runBenchmarkLoop(addresses);
   }
+};
+
+class DummyFrontend final : public Ramulator::IFrontEnd {
+  void tick() {}
+  bool is_finished() { return false; }
+};
+
+// Ramulator2 implementation
+class Ramulator2Benchmark : public MemoryBenchmark {
+private:
+  Ramulator::IMemorySystem *mem;
+  DummyFrontend *frontend;
+  std::string outputFile;
+
+  void readComplete(Ramulator::Request &req) {
+    g_completedTransactions++;
+    g_pendingTransactions--;
+    g_totalBytesTransferred += 64;
+  }
+
+public:
+  Ramulator2Benchmark(const std::string &configFile,
+                      const std::string &outputDir) {
+    // Parse the YAML configuration
+    YAML::Node config = Ramulator::Config::parse_config_file(configFile, {});
+
+    // Create the memory system
+    mem = Ramulator::Factory::create_memory_system(config);
+    frontend = new DummyFrontend;
+    mem->connect_frontend(frontend);
+
+    // Try to get DRAM timing and organization info
+    auto dram = mem->get_ifce<Ramulator::IDRAM>();
+    dramConfig.tCK = dram->m_timing_vals("tCK_ps") / 1000.0;
+    dramConfig.channels = dram->get_level_size("channel");
+    dramConfig.ranks = dram->get_level_size("rank");
+    dramConfig.bankGroups = dram->get_level_size("bankgroup");
+    if (dramConfig.bankGroups == (uint64_t)-1) {
+      // nonexistent, e.g. DDR3
+      dramConfig.bankGroups = 1;
+    }
+    dramConfig.banksPerGroup = dram->get_level_size("bank");
+    dramConfig.rows = dram->get_level_size("row");
+    dramConfig.columns = dram->get_level_size("column");
+
+    // Assume RoBaRaCoCh from Ramulator2
+    // Order: RoBaBgRaCoCh according to source code
+    dramConfig.addressMapping = AddressMappingMode::RoBaBgRaCoCh;
+
+    outputFile = outputDir + "/ramulator2.yaml";
+  }
+
+  ~Ramulator2Benchmark() {
+    delete mem;
+    delete frontend;
+  }
+
+  bool tryAddTransaction(uint64_t addr) override {
+    Ramulator::Request req(
+        addr, Ramulator::Request::Type::Read, 0,
+        [this](Ramulator::Request &r) { this->readComplete(r); });
+    return mem->send(req);
+  }
+
+  void clockTick() override { mem->tick(); }
+
+  void printStats() override {
+    YAML::Emitter emitter;
+    emitter << YAML::BeginMap;
+    mem->m_impl->print_stats(emitter);
+    emitter << YAML::EndMap;
+    std::fstream f(outputFile, std::ios_base::out | std::ios_base::trunc);
+    f << emitter.c_str() << std::endl;
+  }
+
+  std::string getSimulatorName() const override { return "Ramulator2"; }
 };
 
 // DRAMSim3 implementation
@@ -443,21 +573,22 @@ public:
 
     if (config.address_mapping == "rochrababgco") {
       dramConfig.addressMapping = AddressMappingMode::RoChRaBaBgCo;
+    } else if (config.address_mapping == "robabgracoch") {
+      dramConfig.addressMapping = AddressMappingMode::RoBaBgRaCoCh;
     } else {
       assert(false && "Unrecognized address mapping");
     }
-
-    printDRAMConfig("DRAMSim3");
   }
 
   ~DRAMSim3Benchmark() { delete mem; }
 
-  bool willAcceptTransaction(uint64_t addr) override {
-    return mem->WillAcceptTransaction(addr, false);
-  }
-
-  void addTransaction(uint64_t addr) override {
-    mem->AddTransaction(addr, false);
+  bool tryAddTransaction(uint64_t addr) override {
+    if (mem->WillAcceptTransaction(addr, false)) {
+      mem->AddTransaction(addr, false);
+      return true;
+    } else {
+      return false;
+    }
   }
 
   void clockTick() override { mem->ClockTick(); }
@@ -499,20 +630,24 @@ void printUsage(const char *progName) {
             << std::endl;
   std::cout << std::endl;
   std::cout << "Options:" << std::endl;
-  std::cout << "  -s, --simulator SIM  Simulator to use: dramsim3 "
+  std::cout << "  -s, --simulator SIM  Simulator to use: dramsim3, ramulator2 "
                "(default: dramsim3)"
             << std::endl;
-  std::cout << "  -c, --config FILE    DRAMSim3: Configuration file"
+  std::cout << "  -c, --config FILE    Configuration file (INI for dramsim3, "
+               "YAML for ramulator2)"
             << std::endl;
-  std::cout
-      << "  -o, --output DIR     DRAMSim3: Output directory (default: results)"
-      << std::endl;
+  std::cout << "  -o, --output DIR     Output directory (default: results)"
+            << std::endl;
   std::cout << "  -h, --help           Show this help message" << std::endl;
   std::cout << std::endl;
   std::cout << "Examples:" << std::endl;
   std::cout
       << "  " << progName
       << " -s dramsim3 -c submodules/DRAMSim3/configs/HBM2_8Gb_x128.ini 50000"
+      << std::endl;
+  std::cout
+      << "  " << progName
+      << " -s ramulator2 -c submodules/ramulator2/example_config.yaml 50000"
       << std::endl;
 }
 
@@ -524,7 +659,7 @@ int main(int argc, char *argv[]) {
   // Configuration
   std::string simulator = "dramsim3";
 
-  // DRAMSim3 defaults
+  // Defaults
   std::string configFile = "submodules/DRAMSim3/configs/DDR4_8Gb_x8_2666.ini";
   std::string outputDir = "results";
 
@@ -560,12 +695,10 @@ int main(int argc, char *argv[]) {
   std::cout << "\nConfiguration:" << std::endl;
   std::cout << "  Simulator: " << simulator << std::endl;
   std::cout << "  Transactions: " << numTransactions << std::endl;
-  if (simulator == "dramsim3") {
-    std::cout << "  Config: " << configFile << std::endl;
-    std::cout << "  Output: " << outputDir << std::endl;
-  } else {
+  std::cout << "  Config: " << configFile << std::endl;
+  if (simulator != "dramsim3" && simulator != "ramulator2") {
     std::cerr << "Error: Unknown simulator '" << simulator
-              << "'. Use 'dramsim3'." << std::endl;
+              << "'. Use 'dramsim3' or 'ramulator2'." << std::endl;
     return 1;
   }
 
@@ -574,6 +707,7 @@ int main(int argc, char *argv[]) {
 
     // Run all random access modes
     std::vector<std::pair<std::string, RandomAccessMode>> randomModes = {
+        {"Sequential", RandomAccessMode::Sequential},
         {"SameBGSameBASameRow", RandomAccessMode::SameBGSameBASameRow},
         {"RandBGRandBARandRow", RandomAccessMode::RandBGRandBARandRow},
         {"SameBGRandBASameRow", RandomAccessMode::SameBGRandBASameRow},
@@ -583,11 +717,21 @@ int main(int argc, char *argv[]) {
 
     int scenairo = 1;
     for (std::pair<std::string, RandomAccessMode> randomMode : randomModes) {
+      // create output folders
+      std::string realOutputDir = outputDir + "/" + randomMode.first;
+      mkdir(outputDir.c_str(), 0755);
+      mkdir(realOutputDir.c_str(), 0755);
+
       if (simulator == "dramsim3") {
-        std::string realOutputDir = outputDir + "/" + randomMode.first;
-        mkdir(realOutputDir.c_str(), 0755);
         benchmark = std::unique_ptr<MemoryBenchmark>(
             new DRAMSim3Benchmark(configFile, realOutputDir));
+      } else if (simulator == "ramulator2") {
+        benchmark = std::unique_ptr<MemoryBenchmark>(
+            new Ramulator2Benchmark(configFile, realOutputDir));
+      }
+
+      if (scenairo == 1) {
+        benchmark->printDRAMConfig(simulator);
       }
 
       // Scenario i: Sequential Access
