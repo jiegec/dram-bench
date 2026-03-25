@@ -42,26 +42,22 @@ enum class RandomAccessMode {
   RandBGSameBASameRow  // Random bank group, same bank address, same row
 };
 
-// Address mapping modes
-enum class AddressMappingMode {
-  RoChRaBaBgCo, // Row, Channel, Rank, Bank, Bank Group, Column
-  RoBaBgRaCoCh, // Row, Bank, Bank Group, Rank, Column, Channel
-};
-
 // Abstract base class for memory benchmarks
 class MemoryBenchmark {
 public:
   struct DRAMConfig {
-    double tCK;                        // Clock period
-    uint64_t channels;                 // Number of channels
-    uint64_t ranks;                    // Number of ranks
-    uint64_t bankGroups;               // Number of bank groups (DDR4+)
-    uint64_t banksPerGroup;            // Banks per group
-    uint64_t rows;                     // Number of rows per bank
-    uint64_t columns;                  // Number of columns
-    uint64_t busWidth;                 // Data bus width
-    uint64_t burstLength;              // Burst length
-    AddressMappingMode addressMapping; // Address mapping
+    double tCK;             // Clock period
+    uint64_t channels;      // Number of channels
+    uint64_t ranks;         // Number of ranks
+    uint64_t bankGroups;    // Number of bank groups (DDR4+)
+    uint64_t banksPerGroup; // Banks per group
+    uint64_t rows;          // Number of rows per bank
+    uint64_t columns;       // Number of columns
+    uint64_t busWidth;      // Data bus width
+    uint64_t burstLength;   // Burst length
+    std::string
+        addressMapping; // Address mapping (Ch for channel, Ra for rank, Bg for
+                        // bank group, Ba for bank, Ro for row, Co for column)
 
     // DRAM timing parameters
     int tRCD;   // ACT to internal read or write delay time
@@ -77,8 +73,8 @@ public:
     DRAMConfig()
         : tCK(1.5), channels(1), ranks(1), bankGroups(1), banksPerGroup(8),
           rows(16384), columns(1024), busWidth(64), burstLength(8),
-          addressMapping(AddressMappingMode::RoChRaBaBgCo), tRCD(0), tRP(0),
-          tRAS(0), tREFI(0), tCCD(0), tCCD_S(0), tCCD_L(0), tFAW(0) {}
+          addressMapping("RoChRaBaBgCo"), tRCD(0), tRP(0), tRAS(0), tREFI(0),
+          tCCD(0), tCCD_S(0), tCCD_L(0), tFAW(0) {}
 
     // Compute theoretical bandwidth based on parameters
     double getTheoreticalBandwidthGBps() const {
@@ -181,14 +177,8 @@ public:
     std::cout << "    Bus Width: " << dramConfig.busWidth << " bits/channel"
               << std::endl;
     std::cout << "    Burst Length: " << dramConfig.burstLength << std::endl;
-    switch (dramConfig.addressMapping) {
-    case AddressMappingMode::RoChRaBaBgCo:
-      std::cout << "    Address Mapping: RoChRaBaBgCo" << std::endl;
-      break;
-    case AddressMappingMode::RoBaBgRaCoCh:
-      std::cout << "    Address Mapping: RoBaBgRaCoCh" << std::endl;
-      break;
-    }
+    std::cout << "    Address Mapping: " << dramConfig.addressMapping
+              << std::endl;
     std::cout << "    Theoretical Max Bandwidth: " << std::fixed
               << std::setprecision(2)
               << dramConfig.getTheoreticalBandwidthGBps() << " GB/s"
@@ -274,8 +264,7 @@ protected:
     std::vector<uint64_t> ba;
     std::vector<uint64_t> ro;
 
-    std::random_device rd;
-    std::mt19937_64 gen(rd());
+    std::mt19937_64 gen(0);
 
     for (uint64_t i = 0; i < numTransactions; i++) {
       bg.push_back(i % dramConfig.bankGroups);
@@ -302,8 +291,7 @@ protected:
 
     std::vector<uint64_t> ba;
 
-    std::random_device rd;
-    std::mt19937_64 gen(rd());
+    std::mt19937_64 gen(0);
 
     for (uint64_t i = 0; i < numTransactions; i++) {
       ba.push_back(i % dramConfig.banksPerGroup);
@@ -328,8 +316,7 @@ protected:
 
     std::vector<uint64_t> ro;
 
-    std::random_device rd;
-    std::mt19937_64 gen(rd());
+    std::mt19937_64 gen(0);
 
     for (uint64_t i = 0; i < numTransactions; i++) {
       ro.push_back(i % dramConfig.rows);
@@ -352,8 +339,7 @@ protected:
 
     std::vector<uint64_t> bg;
 
-    std::random_device rd;
-    std::mt19937_64 gen(rd());
+    std::mt19937_64 gen(0);
 
     for (uint64_t i = 0; i < numTransactions; i++) {
       bg.push_back(i % dramConfig.bankGroups);
@@ -380,6 +366,16 @@ protected:
     int temp = dramConfig.columns / dramConfig.burstLength;
     while (temp > 1) {
       colBits++;
+      assert(temp % 2 == 0);
+      temp >>= 1;
+    }
+
+    // Row
+    assert(row < dramConfig.rows);
+    int rowBits = 0;
+    temp = dramConfig.rows;
+    while (temp > 1) {
+      rowBits++;
       assert(temp % 2 == 0);
       temp >>= 1;
     }
@@ -411,46 +407,40 @@ protected:
       temp >>= 1;
     }
 
-    if (dramConfig.addressMapping == AddressMappingMode::RoChRaBaBgCo) {
-      // DRAM address mapping: [row][channel][rank][bank][bank group][column]
-      uint64_t addr = 0;
+    uint64_t addr = 0;
 
-      // Column is at the lowest bits (6 bits for 64-byte cache line)
-      addr |= col << 6;
-
-      // Bank group next (log2(bankGroups) bits)
-      addr |= bankGroup << (6 + colBits);
-
-      // Bank address next (log2(banksPerGroup) bits)
-      addr |= bank << (6 + colBits + bgBits);
-
-      // Rank next
-      // Row is at the highest bits
-      addr |= row << (6 + colBits + bankBits + rankBits + bgBits);
-
-      return addr;
-    } else if (dramConfig.addressMapping == AddressMappingMode::RoBaBgRaCoCh) {
-      // DRAM address mapping: [row][bank][bank group][rank][column][channel]
-      uint64_t addr = 0;
-
-      // Channel is at the lowest bits (6 bits for 64-byte cache line)
-      // Column next
-      addr |= col << 6;
-
-      // Rank next
-      // Bank group next (log2(bankGroups) bits)
-      addr |= bankGroup << (6 + colBits + rankBits);
-
-      // Bank address next (log2(banksPerGroup) bits)
-      addr |= bank << (6 + colBits + rankBits + bgBits);
-
-      // Row is at the highest bits
-      addr |= row << (6 + colBits + rankBits + bgBits + bankBits);
-
-      return addr;
-    } else {
-      assert(false && "TODO");
+    // Insert fields from right to left
+    uint64_t shift = 6;
+    for (int i = 10; i >= 0; i -= 2) {
+      std::string field = dramConfig.addressMapping.substr(i, 2);
+      // Currently, channel and rank are always set to zero
+      if (field == "Ch") {
+        // Channel
+      } else if (field == "Ra") {
+        // Rank
+        shift += rankBits;
+      } else if (field == "Bg") {
+        // Bank Group
+        addr |= bankGroup << shift;
+        shift += bgBits;
+      } else if (field == "Ba") {
+        // Bank
+        addr |= bank << shift;
+        shift += bankBits;
+      } else if (field == "Ro") {
+        // Row
+        addr |= row << shift;
+        shift += rowBits;
+      } else if (field == "Co") {
+        // Column
+        addr |= col << shift;
+        shift += colBits;
+      } else {
+        assert(false && "Unsupported field");
+      }
     }
+
+    return addr;
   }
 
   // Wrapper for random bank benchmark with mode selection
@@ -550,7 +540,7 @@ public:
     auto mapper = mem->get_ifce<Ramulator::IAddrMapper>();
     if (mapper->m_impl->get_name() == "RoBaRaCoCh") {
       // Order: RoBaBgRaCoCh according to source code
-      dramConfig.addressMapping = AddressMappingMode::RoBaBgRaCoCh;
+      dramConfig.addressMapping = "RoBaBgRaCoCh";
     } else {
       assert(false && "TODO");
     }
@@ -629,12 +619,13 @@ public:
     dramConfig.tCCD_L = config.tCCD_L;
     dramConfig.tFAW = config.tFAW;
 
-    if (config.address_mapping == "rochrababgco") {
-      dramConfig.addressMapping = AddressMappingMode::RoChRaBaBgCo;
-    } else if (config.address_mapping == "robabgracoch") {
-      dramConfig.addressMapping = AddressMappingMode::RoBaBgRaCoCh;
-    } else {
-      assert(false && "Unrecognized address mapping");
+    // Convert e.g. "rochrababgco" to "RoChRaBaBgCo";
+    dramConfig.addressMapping = config.address_mapping;
+    assert(dramConfig.addressMapping.size() == 12);
+    for (size_t i = 0; i < dramConfig.addressMapping.size(); i += 2) {
+      char &ch = dramConfig.addressMapping[i];
+      assert(ch >= 'a' && ch <= 'z');
+      ch = ch - 'a' + 'A';
     }
   }
 
