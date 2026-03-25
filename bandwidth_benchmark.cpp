@@ -181,6 +181,14 @@ public:
     std::cout << "    Bus Width: " << dramConfig.busWidth << " bits/channel"
               << std::endl;
     std::cout << "    Burst Length: " << dramConfig.burstLength << std::endl;
+    switch (dramConfig.addressMapping) {
+    case AddressMappingMode::RoChRaBaBgCo:
+      std::cout << "    Address Mapping: RoChRaBaBgCo" << std::endl;
+      break;
+    case AddressMappingMode::RoBaBgRaCoCh:
+      std::cout << "    Address Mapping: RoBaBgRaCoCh" << std::endl;
+      break;
+    }
     std::cout << "    Theoretical Max Bandwidth: " << std::fixed
               << std::setprecision(2)
               << dramConfig.getTheoreticalBandwidthGBps() << " GB/s"
