@@ -67,7 +67,7 @@ directories:
 	mkdir -p $(BUILD_DIR)/dramsim3
 
 # Main source compilation
-$(BUILD_DIR)/main.o: $(MAIN_SRC)
+$(BUILD_DIR)/main.o: $(MAIN_SRC) $(RAMULATOR2_DIR)/build/libramulator.a
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
 # DRAMSim3 source compilation
