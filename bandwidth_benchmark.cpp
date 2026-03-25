@@ -63,11 +63,22 @@ public:
     uint64_t burstLength;              // Burst length
     AddressMappingMode addressMapping; // Address mapping
 
+    // DRAM timing parameters
+    int tRCD;   // ACT to internal read or write delay time
+    int tRP;    // PRE command period
+    int tRAS;   // ACT to PRE command period
+    int tREFI;  // Average periodic refresh interval
+    int tCCD;   //  CAS_n to CAS_n command delay
+    int tCCD_S; // CAS_n to CAS_n command delay for same bank group
+    int tCCD_L; // CAS_n to CAS_n command delay for different bank group
+    int tFAW;   // Four activate window
+
     // Set default parameters
     DRAMConfig()
         : tCK(1.5), channels(1), ranks(1), bankGroups(1), banksPerGroup(8),
           rows(16384), columns(1024), busWidth(64), burstLength(8),
-          addressMapping(AddressMappingMode::RoChRaBaBgCo) {}
+          addressMapping(AddressMappingMode::RoChRaBaBgCo), tRCD(0), tRP(0),
+          tRAS(0), tREFI(0), tCCD(0), tCCD_S(0), tCCD_L(0), tFAW(0) {}
 
     // Compute theoretical bandwidth based on parameters
     double getTheoreticalBandwidthGBps() const {
@@ -174,6 +185,15 @@ public:
               << std::setprecision(2)
               << dramConfig.getTheoreticalBandwidthGBps() << " GB/s"
               << std::endl;
+    std::cout << "  Timing Parameters:" << std::endl;
+    std::cout << "    tRCD: " << dramConfig.tRCD << " cycles" << std::endl;
+    std::cout << "    tRP: " << dramConfig.tRP << " cycles" << std::endl;
+    std::cout << "    tRAS: " << dramConfig.tRAS << " cycles" << std::endl;
+    std::cout << "    tREFI: " << dramConfig.tREFI << " cycles" << std::endl;
+    std::cout << "    tCCD: " << dramConfig.tCCD << " cycles" << std::endl;
+    std::cout << "    tCCD_S: " << dramConfig.tCCD_S << " cycles" << std::endl;
+    std::cout << "    tCCD_L: " << dramConfig.tCCD_L << " cycles" << std::endl;
+    std::cout << "    tFAW: " << dramConfig.tFAW << " cycles" << std::endl;
   }
 
 protected:
@@ -502,6 +522,22 @@ public:
     dramConfig.rows = dram->get_level_size("row");
     dramConfig.columns = dram->get_level_size("column");
 
+    // Read timing parameters (cycle counts)
+    dramConfig.tRCD = dram->m_timing_vals("nRCD");
+    dramConfig.tRP = dram->m_timing_vals("nRP");
+    dramConfig.tRAS = dram->m_timing_vals("nRAS");
+    dramConfig.tREFI = dram->m_timing_vals("nREFI");
+    if (dram->m_timings.contains("nCCD")) {
+      dramConfig.tCCD = dram->m_timing_vals("nCCD");
+    }
+    if (dram->m_timings.contains("nCCDS")) {
+      dramConfig.tCCD_S = dram->m_timing_vals("nCCDS");
+    }
+    if (dram->m_timings.contains("nCCDL")) {
+      dramConfig.tCCD_L = dram->m_timing_vals("nCCDL");
+    }
+    dramConfig.tFAW = dram->m_timing_vals("nFAW");
+
     // Read address mapping
     auto mapper = mem->get_ifce<Ramulator::IAddrMapper>();
     if (mapper->m_impl->get_name() == "RoBaRaCoCh") {
@@ -576,6 +612,14 @@ public:
     dramConfig.columns = config.columns;
     dramConfig.busWidth = config.bus_width;
     dramConfig.burstLength = config.BL;
+    dramConfig.tRCD = config.tRCD;
+    dramConfig.tRP = config.tRP;
+    dramConfig.tRAS = config.tRAS;
+    dramConfig.tREFI = config.tREFI;
+    dramConfig.tCCD = config.tCCD_S;
+    dramConfig.tCCD_S = config.tCCD_S;
+    dramConfig.tCCD_L = config.tCCD_L;
+    dramConfig.tFAW = config.tFAW;
 
     if (config.address_mapping == "rochrababgco") {
       dramConfig.addressMapping = AddressMappingMode::RoChRaBaBgCo;
