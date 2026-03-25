@@ -504,7 +504,6 @@ public:
 
     // Read address mapping
     auto mapper = mem->get_ifce<Ramulator::IAddrMapper>();
-    std::cout << "mapper" << mapper->get_name() << std::endl;
     if (mapper->m_impl->get_name() == "RoBaRaCoCh") {
       // Order: RoBaBgRaCoCh according to source code
       dramConfig.addressMapping = AddressMappingMode::RoBaBgRaCoCh;
