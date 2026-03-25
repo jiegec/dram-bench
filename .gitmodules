@@ -1,0 +1,6 @@
+[submodule "submodules/ramulator2"]
+	path = submodules/ramulator2
+	url = git@github.com:CMU-SAFARI/ramulator2.git
+[submodule "submodules/DRAMSim3"]
+	path = submodules/DRAMSim3
+	url = git@github.com:umd-memsys/DRAMsim3.git

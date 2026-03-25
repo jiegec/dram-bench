@@ -1,0 +1,6 @@
+results
+bandwidth_benchmark
+*.log
+compile_commands.json
+.cache
+build
