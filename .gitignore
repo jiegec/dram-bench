@@ -1,4 +1,6 @@
 results
+results-ddr3
+results-ddr4
 bandwidth_benchmark
 *.log
 compile_commands.json
