@@ -3,13 +3,15 @@ MemorySystem:
   clock_ratio: 1
 
   DRAM:
-    impl: DDR4
+    impl: DDR5
     org:
-      preset: DDR4_8Gb_x8
+      preset: DDR5_8Gb_x8
       channel: 1
       rank: 2
     timing:
-      preset: DDR4_3200AA
+      preset: DDR5_3200AN
+    RFM:
+      BRC: 2
 
   Controller:
     impl: Generic
