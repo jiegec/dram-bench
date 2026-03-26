@@ -519,6 +519,8 @@ public:
     dramConfig.banksPerGroup = dram->get_level_size("bank");
     dramConfig.rows = dram->get_level_size("row");
     dramConfig.columns = dram->get_level_size("column");
+    dramConfig.busWidth = dram->m_channel_width;
+    dramConfig.burstLength = dram->m_internal_prefetch_size;
 
     // Read timing parameters (cycle counts)
     dramConfig.tRCD = dram->m_timing_vals("nRCD");
