@@ -41,3 +41,7 @@ This is just a toy project for personal use, so:
 - Ramulator2 uses RoBaRaCoCh address mapping by default, while DRAMSim3 uses RoChRaBaBgCo. Keep this in mind when comparing results.
 - No visualization, just text output
 - No systematic validation of simulator accuracy
+
+## Related Blog Post
+
+This project was used for experiments in a blog post (written in Chinese): <https://jia.je/hardware/2026/03/26/sdram-bandwidth/>.
