@@ -62,6 +62,7 @@ public:
     int tRP;    // PRE command period
     int tRAS;   // ACT to PRE command period
     int tREFI;  // Average periodic refresh interval
+    int tRFC;   // REFRESH command period
     int tCCD;   //  CAS_n to CAS_n command delay
     int tCCD_S; // CAS_n to CAS_n command delay for same bank group
     int tCCD_L; // CAS_n to CAS_n command delay for different bank group
@@ -72,7 +73,7 @@ public:
         : tCK(1.5), channels(1), ranks(1), bankGroups(1), banksPerGroup(8),
           rows(16384), columns(1024), busWidth(64), burstLength(8),
           addressMapping("RoChRaBaBgCo"), tRCD(0), tRP(0), tRAS(0), tREFI(0),
-          tCCD(0), tCCD_S(0), tCCD_L(0), tFAW(0) {}
+          tRFC(0), tCCD(0), tCCD_S(0), tCCD_L(0), tFAW(0) {}
 
     // Compute theoretical bandwidth based on parameters
     double getTheoreticalBandwidthGBps() const {
@@ -90,6 +91,7 @@ public:
     double bandwidthGBps;
     double cycleTimeNs;
     DRAMConfig config;
+    double predictedEfficiency;
   };
 
   virtual ~MemoryBenchmark() = default;
@@ -107,6 +109,7 @@ public:
     s.transactionsCompleted = g_completedTransactions.load();
     s.cycleTimeNs = dramConfig.tCK;
     s.config = dramConfig;
+    s.predictedEfficiency = predictedEfficiency;
 
     double totalTimeNs = s.totalCycles * dramConfig.tCK;
     double totalTimeS = totalTimeNs / 1e9;
@@ -133,6 +136,7 @@ public:
                RandomAccessMode mode = RandomAccessMode::RandBGRandBARandRow) {
     std::string modeStr;
     std::vector<uint64_t> addresses;
+    predictedEfficiency = -1.0;
 
     switch (mode) {
     case RandomAccessMode::Sequential:
@@ -146,18 +150,43 @@ public:
     case RandomAccessMode::RandBGRandBARandRow:
       modeStr = "Random Bank Group, Bank, Row";
       addresses = generateRandBGRandBARandRow(numTransactions);
+      // bottleneck:
+      // every tFAW cycle, only four requests
+      // every tREFI cycle, loss tRFC cycles
+      predictedEfficiency = (double)dramConfig.burstLength / 2 * 4 /
+                            dramConfig.tFAW * dramConfig.tREFI /
+                            (dramConfig.tREFI + dramConfig.tRFC);
       break;
     case RandomAccessMode::SameBGRandBASameRow:
       modeStr = "Same Bank Group, Random Bank, Same Row";
       addresses = generateSameBGRandBASameRow(numTransactions);
+      // bottleneck:
+      // every tCCD_L cycle, only one request
+      // every tREFI cycle, loss tRFC cycles
+      predictedEfficiency = (double)dramConfig.burstLength / 2 /
+                            dramConfig.tCCD_L * dramConfig.tREFI /
+                            (dramConfig.tREFI + dramConfig.tRFC);
       break;
     case RandomAccessMode::SameBGSameBARandRow:
       modeStr = "Same Bank Group & Bank, Random Row";
       addresses = generateSameBGSameBARandRow(numTransactions);
+      // bottleneck:
+      // every tRAS+tRP cycle, only one request
+      // every tREFI cycle, loss tRFC cycles
+      predictedEfficiency = (double)dramConfig.burstLength / 2 /
+                            (dramConfig.tRAS + dramConfig.tRP) *
+                            dramConfig.tREFI /
+                            (dramConfig.tREFI + dramConfig.tRFC);
       break;
     case RandomAccessMode::RandBGSameBASameRow:
       modeStr = "Random Bank Group, Same Bank, Same Row";
       addresses = generateRandBGSameBASameRow(numTransactions);
+      if (dramConfig.bankGroups > 1) {
+        // bottleneck:
+        // every tREFI cycle, loss tRFC cycles
+        predictedEfficiency =
+            (double)dramConfig.tREFI / (dramConfig.tREFI + dramConfig.tRFC);
+      }
       break;
     }
     std::cout << "\n=== " << modeStr << " Benchmark (" << getSimulatorName()
@@ -198,6 +227,7 @@ public:
     std::cout << "    tRP: " << dramConfig.tRP << " cycles" << std::endl;
     std::cout << "    tRAS: " << dramConfig.tRAS << " cycles" << std::endl;
     std::cout << "    tREFI: " << dramConfig.tREFI << " cycles" << std::endl;
+    std::cout << "    tRFC: " << dramConfig.tRFC << " cycles" << std::endl;
     std::cout << "    tCCD: " << dramConfig.tCCD << " cycles" << std::endl;
     std::cout << "    tCCD_S: " << dramConfig.tCCD_S << " cycles" << std::endl;
     std::cout << "    tCCD_L: " << dramConfig.tCCD_L << " cycles" << std::endl;
@@ -207,6 +237,7 @@ public:
 protected:
   uint64_t endCycle;
   DRAMConfig dramConfig;
+  double predictedEfficiency;
 
   // Generate random bank addresses
   // Unified benchmark loop with pre-generated addresses
@@ -229,7 +260,7 @@ protected:
       clockTick();
       currentCycle++;
 
-      if (currentCycle > 10000000) {
+      if (currentCycle > 100000000) {
         std::cout << "Warning: Simulation timeout at cycle " << currentCycle
                   << std::endl;
         break;
@@ -504,14 +535,25 @@ public:
     dramConfig.tRP = dram->m_timing_vals("nRP");
     dramConfig.tRAS = dram->m_timing_vals("nRAS");
     dramConfig.tREFI = dram->m_timing_vals("nREFI");
+    if (dram->m_timings.contains("nRFC1")) {
+      dramConfig.tRFC = dram->m_timing_vals("nRFC1");
+    } else {
+      dramConfig.tRFC = dram->m_timing_vals("nRFC");
+    }
     if (dram->m_timings.contains("nCCD")) {
       dramConfig.tCCD = dram->m_timing_vals("nCCD");
     }
     if (dram->m_timings.contains("nCCDS")) {
       dramConfig.tCCD_S = dram->m_timing_vals("nCCDS");
+    } else {
+      // DDR3, tCCD_S = tCCD_L = tCCD
+      dramConfig.tCCD_S = dramConfig.tCCD;
     }
     if (dram->m_timings.contains("nCCDL")) {
       dramConfig.tCCD_L = dram->m_timing_vals("nCCDL");
+    } else {
+      // DDR3, tCCD_S = tCCD_L = tCCD
+      dramConfig.tCCD_L = dramConfig.tCCD;
     }
     dramConfig.tFAW = dram->m_timing_vals("nFAW");
 
@@ -535,8 +577,8 @@ public:
   bool tryAddTransaction(uint64_t addr, bool isWrite) override {
     Ramulator::Request req(
         addr,
-        isWrite ? Ramulator::Request::Type::Read
-                : Ramulator::Request::Type::Write,
+        isWrite ? Ramulator::Request::Type::Write
+                : Ramulator::Request::Type::Read,
         0, [this](Ramulator::Request &r) { this->readComplete(r); });
     return mem->send(req);
   }
@@ -595,6 +637,7 @@ public:
     dramConfig.tRP = config.tRP;
     dramConfig.tRAS = config.tRAS;
     dramConfig.tREFI = config.tREFI;
+    dramConfig.tRFC = config.tRFC;
     dramConfig.tCCD = config.tCCD_S;
     dramConfig.tCCD_S = config.tCCD_S;
     dramConfig.tCCD_L = config.tCCD_L;
@@ -652,6 +695,11 @@ void printResults(const std::string &name,
             << std::endl;
   std::cout << "  Efficiency: " << std::fixed << std::setprecision(1)
             << efficiency << "%" << std::endl;
+  if (stats.predictedEfficiency != -1.0) {
+    std::cout << "  Predicted Efficiency: " << std::fixed
+              << std::setprecision(1) << stats.predictedEfficiency * 100.0
+              << "%" << std::endl;
+  }
 }
 
 void printUsage(const char *progName) {
