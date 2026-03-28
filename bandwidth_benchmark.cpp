@@ -1,7 +1,6 @@
 #include <algorithm>
 #include <atomic>
 #include <cassert>
-#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
@@ -10,7 +9,6 @@
 #include <ios>
 #include <iostream>
 #include <map>
-#include <memory>
 #include <random>
 #include <sys/stat.h>
 #include <tuple>
@@ -125,40 +123,52 @@ public:
   DRAMConfig getDRAMConfig() const { return dramConfig; }
 
   // Virtual methods for simulator-specific operations
-  virtual bool tryAddTransaction(uint64_t addr) = 0;
+  virtual bool tryAddTransaction(uint64_t addr, bool isWrite) = 0;
   virtual void clockTick() = 0;
   virtual void printStats() = 0;
   virtual std::string getSimulatorName() const = 0;
 
   void
-  runBenchmark(uint64_t numTransactions,
+  runBenchmark(uint64_t numTransactions, bool isWrite,
                RandomAccessMode mode = RandomAccessMode::RandBGRandBARandRow) {
     std::string modeStr;
+    std::vector<uint64_t> addresses;
+
     switch (mode) {
     case RandomAccessMode::Sequential:
       modeStr = "Sequential";
+      addresses = generateSequential(numTransactions);
       break;
     case RandomAccessMode::SameBGSameBASameRow:
       modeStr = "Same Bank Group, Bank, Row";
+      addresses = generateSameBGSameBASameRow(numTransactions);
       break;
     case RandomAccessMode::RandBGRandBARandRow:
       modeStr = "Random Bank Group, Bank, Row";
+      addresses = generateRandBGRandBARandRow(numTransactions);
       break;
     case RandomAccessMode::SameBGRandBASameRow:
       modeStr = "Same Bank Group, Random Bank, Same Row";
+      addresses = generateSameBGRandBASameRow(numTransactions);
       break;
     case RandomAccessMode::SameBGSameBARandRow:
       modeStr = "Same Bank Group & Bank, Random Row";
+      addresses = generateSameBGSameBARandRow(numTransactions);
       break;
     case RandomAccessMode::RandBGSameBASameRow:
       modeStr = "Random Bank Group, Same Bank, Same Row";
+      addresses = generateRandBGSameBASameRow(numTransactions);
       break;
     }
     std::cout << "\n=== " << modeStr << " Benchmark (" << getSimulatorName()
               << ") ===" << std::endl;
 
     resetStats();
-    runRandomBankLoop(numTransactions, mode);
+
+    // No duplication
+    assert(addresses.size() == numTransactions);
+
+    runBenchmarkLoop(addresses, isWrite);
     printStats();
   }
 
@@ -200,14 +210,14 @@ protected:
 
   // Generate random bank addresses
   // Unified benchmark loop with pre-generated addresses
-  void runBenchmarkLoop(const std::vector<uint64_t> &addresses) {
+  void runBenchmarkLoop(const std::vector<uint64_t> &addresses, bool isWrite) {
     uint64_t currentCycle = 0;
     uint64_t transactionsIssued = 0;
     uint64_t numTransactions = addresses.size();
 
     while (transactionsIssued < numTransactions) {
       uint64_t addr = addresses[transactionsIssued];
-      if (tryAddTransaction(addr)) {
+      if (tryAddTransaction(addr, isWrite)) {
         g_pendingTransactions++;
         transactionsIssued++;
       }
@@ -442,39 +452,6 @@ protected:
 
     return addr;
   }
-
-  // Wrapper for random bank benchmark with mode selection
-  void runRandomBankLoop(
-      uint64_t numTransactions,
-      RandomAccessMode mode = RandomAccessMode::RandBGRandBARandRow) {
-    std::vector<uint64_t> addresses;
-
-    switch (mode) {
-    case RandomAccessMode::Sequential:
-      addresses = generateSequential(numTransactions);
-      break;
-    case RandomAccessMode::SameBGSameBASameRow:
-      addresses = generateSameBGSameBASameRow(numTransactions);
-      break;
-    case RandomAccessMode::RandBGRandBARandRow:
-      addresses = generateRandBGRandBARandRow(numTransactions);
-      break;
-    case RandomAccessMode::SameBGRandBASameRow:
-      addresses = generateSameBGRandBASameRow(numTransactions);
-      break;
-    case RandomAccessMode::SameBGSameBARandRow:
-      addresses = generateSameBGSameBARandRow(numTransactions);
-      break;
-    case RandomAccessMode::RandBGSameBASameRow:
-      addresses = generateRandBGSameBASameRow(numTransactions);
-      break;
-    }
-
-    // No duplication
-    assert(addresses.size() == numTransactions);
-
-    runBenchmarkLoop(addresses);
-  }
 };
 
 class DummyFrontend final : public Ramulator::IFrontEnd {
@@ -555,10 +532,12 @@ public:
     delete frontend;
   }
 
-  bool tryAddTransaction(uint64_t addr) override {
+  bool tryAddTransaction(uint64_t addr, bool isWrite) override {
     Ramulator::Request req(
-        addr, Ramulator::Request::Type::Read, 0,
-        [this](Ramulator::Request &r) { this->readComplete(r); });
+        addr,
+        isWrite ? Ramulator::Request::Type::Read
+                : Ramulator::Request::Type::Write,
+        0, [this](Ramulator::Request &r) { this->readComplete(r); });
     return mem->send(req);
   }
 
@@ -633,9 +612,9 @@ public:
 
   ~DRAMSim3Benchmark() { delete mem; }
 
-  bool tryAddTransaction(uint64_t addr) override {
-    if (mem->WillAcceptTransaction(addr, false)) {
-      mem->AddTransaction(addr, false);
+  bool tryAddTransaction(uint64_t addr, bool isWrite) override {
+    if (mem->WillAcceptTransaction(addr, isWrite)) {
+      mem->AddTransaction(addr, isWrite);
       return true;
     } else {
       return false;
@@ -773,33 +752,36 @@ int main(int argc, char *argv[]) {
     };
 
     int scenairo = 1;
-    for (std::pair<std::string, RandomAccessMode> randomMode : randomModes) {
-      // create output folders
-      std::string realOutputDir = outputDir + "/" + randomMode.first;
-      mkdir(outputDir.c_str(), 0755);
-      mkdir(realOutputDir.c_str(), 0755);
+    for (int isWrite = 0; isWrite <= 1; isWrite++) {
+      for (std::pair<std::string, RandomAccessMode> randomMode : randomModes) {
+        // create output folders
+        std::string realOutputDir = outputDir + "/" + randomMode.first;
+        mkdir(outputDir.c_str(), 0755);
+        mkdir(realOutputDir.c_str(), 0755);
 
-      if (simulator == "dramsim3") {
-        benchmark = std::unique_ptr<MemoryBenchmark>(
-            new DRAMSim3Benchmark(configFile, realOutputDir));
-      } else if (simulator == "ramulator2") {
-        benchmark = std::unique_ptr<MemoryBenchmark>(
-            new Ramulator2Benchmark(configFile, realOutputDir));
+        if (simulator == "dramsim3") {
+          benchmark = std::unique_ptr<MemoryBenchmark>(
+              new DRAMSim3Benchmark(configFile, realOutputDir));
+        } else if (simulator == "ramulator2") {
+          benchmark = std::unique_ptr<MemoryBenchmark>(
+              new Ramulator2Benchmark(configFile, realOutputDir));
+        }
+
+        if (scenairo == 1) {
+          benchmark->printDRAMConfig(simulator);
+        }
+
+        // Scenario i: Sequential Access
+        std::cout << "\n" << std::string(50, '=') << std::endl;
+        std::cout << "SCENARIO " << scenairo++ << ": "
+                  << (isWrite ? "WRITE " : "READ ") << randomMode.first
+                  << std::endl;
+        std::cout << std::string(50, '=') << std::endl;
+
+        benchmark->runBenchmark(numTransactions, isWrite, randomMode.second);
+        auto randStats = benchmark->getStats();
+        printResults(randomMode.first, randStats);
       }
-
-      if (scenairo == 1) {
-        benchmark->printDRAMConfig(simulator);
-      }
-
-      // Scenario i: Sequential Access
-      std::cout << "\n" << std::string(50, '=') << std::endl;
-      std::cout << "SCENARIO " << scenairo++ << ": " << randomMode.first
-                << std::endl;
-      std::cout << std::string(50, '=') << std::endl;
-
-      benchmark->runBenchmark(numTransactions, randomMode.second);
-      auto randStats = benchmark->getStats();
-      printResults(randomMode.first, randStats);
     }
   } catch (const std::exception &e) {
     std::cerr << "Error: " << e.what() << std::endl;
