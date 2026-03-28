@@ -575,11 +575,11 @@ public:
   }
 
   bool tryAddTransaction(uint64_t addr, bool isWrite) override {
+    assert(!isWrite &&
+           "not supported because callbacks are not called for write requests");
     Ramulator::Request req(
-        addr,
-        isWrite ? Ramulator::Request::Type::Write
-                : Ramulator::Request::Type::Read,
-        0, [this](Ramulator::Request &r) { this->readComplete(r); });
+        addr, Ramulator::Request::Type::Read, 0,
+        [this](Ramulator::Request &r) { this->readComplete(r); });
     return mem->send(req);
   }
 
@@ -800,7 +800,8 @@ int main(int argc, char *argv[]) {
     };
 
     int scenairo = 1;
-    for (int isWrite = 0; isWrite <= 1; isWrite++) {
+    for (int isWrite = 0; isWrite <= (simulator == "dramsim3" ? 1 : 0);
+         isWrite++) {
       for (std::pair<std::string, RandomAccessMode> randomMode : randomModes) {
         // create output folders
         std::string modeDir = outputDir + "/" + (isWrite ? "Write" : "Read");
