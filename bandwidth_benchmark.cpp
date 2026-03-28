@@ -755,8 +755,10 @@ int main(int argc, char *argv[]) {
     for (int isWrite = 0; isWrite <= 1; isWrite++) {
       for (std::pair<std::string, RandomAccessMode> randomMode : randomModes) {
         // create output folders
-        std::string realOutputDir = outputDir + "/" + randomMode.first;
+        std::string modeDir = outputDir + "/" + (isWrite ? "Write" : "Read");
+        std::string realOutputDir = modeDir + "/" + randomMode.first;
         mkdir(outputDir.c_str(), 0755);
+        mkdir(modeDir.c_str(), 0755);
         mkdir(realOutputDir.c_str(), 0755);
 
         if (simulator == "dramsim3") {
